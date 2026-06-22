@@ -208,7 +208,11 @@ def notify_agent_available(orchestration_event: OrchestrationEvent) -> None:
         extra_params = orchestration_event.extra_params or {}
         is_test = extra_params.get("is_test", False)
         is_node_test = extra_params.get("is_node_test", False)
+        preflight_mode = extra_params.get("preflight_mode")
 
+        if preflight_mode:
+            logger.info("Skipping agent liberation for preflight execution")
+            return
         if is_test or is_node_test:
             test_type = "node test" if is_node_test else "function test"
             logger.info(f"Skipping agent liberation for {test_type} execution")
