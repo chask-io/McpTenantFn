@@ -8,7 +8,8 @@ Tenant Tool Gateway Lambda for dynamic tenant MCP tools.
   access token and `Organization-ID`, then maps tenant MCP functions into
   `function_data` dicts for dynamic tool creation.
 - `preflight_mode=execute`: resolves a tenant MCP function action to a tenant
-  API route, then calls the tenant data plane through `TenantDataClient`.
+  API route, exchanges the orchestrator token for a short-lived tenant execute
+  token, then calls the server-resolved tenant route.
 
 The Lambda is DEV-first and declares `dynamic_tools: true` in `manifest.yml`.
 It emits structured JSON logs for every preflight call with:
