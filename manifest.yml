@@ -1,0 +1,44 @@
+function:
+  name: McpTenantFn
+  runtime: python3.12
+  handler: handler.lambda_handler
+  description: |
+    Descubre y ejecuta funciones MCP del API tenant para que los agentes usen herramientas dinámicas del tenant.
+  timeout: 300
+  memory_size: 1024
+  dynamic_tools: true
+
+  layers:
+    - foundationMinimal
+    - foundationApi
+
+  parameters:
+    required: []
+    optional:
+      - name: slug
+        type: string
+        description: Slug del tenant API que expone las funciones MCP.
+      - name: branch
+        type: string
+        description: Rama del tenant API a usar; prod o test.
+      - name: conversation_state
+        type: object
+        description: Historial conversacional usado para descubrir las funciones MCP relevantes.
+      - name: function_name
+        type: string
+        description: Nombre de la funcion MCP del tenant a ejecutar.
+      - name: action
+        type: string
+        description: Accion especifica de la funcion MCP del tenant.
+      - name: params
+        type: object
+        description: Parametros para enviar al endpoint del tenant API.
+
+  widget:
+    enabled: false
+    type: dynamic_widget
+    params: []
+
+  testing:
+    handles_files: false
+    produces_files: false

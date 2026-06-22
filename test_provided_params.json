@@ -1,0 +1,48 @@
+{
+  "function_name": "McpTenantFn",
+  "test_type": "provided_params",
+  "event_type": "preflight_discover",
+  "args": {
+    "preflight_mode": "discover",
+    "conversation_state": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me the customers for this tenant."
+        }
+      ]
+    },
+    "slug": "chask-dev",
+    "branch": "test",
+    "mock_search_response": {
+      "slug": "chask-dev",
+      "organization_uuid": "faed8f52-3a25-41be-8a13-cc10b51e05a7",
+      "branch": "test",
+      "results": [
+        {
+          "uuid": "00000000-0000-0000-0000-000000000001",
+          "name": "get-customers",
+          "description": "List tenant customers.",
+          "branch": "test",
+          "score": 0.91,
+          "actions": [
+            {
+              "name": "list",
+              "method": "GET",
+              "path": "/api/mcp-demo/customers",
+              "summary": "List customers",
+              "description": "Returns customer records.",
+              "request_schema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "widget_params": {},
+  "prompt": "Discover tenant MCP tools for a customer lookup request.",
+  "files": []
+}
