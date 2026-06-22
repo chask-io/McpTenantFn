@@ -147,11 +147,9 @@ class FunctionBackend:
         path = self._required(action_def, "path")
         method = str(action_def.get("method") or "GET").upper()
 
-        client = TenantDataClient(
-            org_uuid=self.orchestration_event.organization.organization_id,
-            branch=branch,
+        client = TenantDataClient.from_event(
+            self.orchestration_event,
             lambda_uuid=os.environ["FUNCTION_UUID"],
-            access_token=self.orchestration_event.access_token,
         )
         tenant_path = self._normalize_tenant_path(path)
 
