@@ -158,7 +158,7 @@ class FunctionBackend:
             method=method,
         )
         route = exchange.get("route") if isinstance(exchange.get("route"), Mapping) else {}
-        tenant_path = self._normalize_tenant_path(self._required(route, "path"))
+        tenant_path = self._tenant_request_path(self._required(route, "path"))
         tenant_method = str(route.get("method") or method).upper()
         access_token = self._required(exchange, "access_token")
 
@@ -315,6 +315,11 @@ class FunctionBackend:
             "Organization-ID": self.orchestration_event.organization.organization_id,
             "Content-Type": "application/json",
         }
+        if self._tenant_base_override_enabled():
+            # DEV/emergency override for tenants not wired to the edge; prod uses
+            # the public tenant host where Cloudflare injects these headers.
+            headers["X-Chask-Tenant"] = slug
+            headers["X-Chask-Branch"] = branch
         started_at = time.monotonic()
         try:
             response = self._request_with_retries(
@@ -601,6 +606,17 @@ class FunctionBackend:
         if branch == "prod":
             return f"https://{slug}.chask.co/api/"
         return f"https://{slug}.chask.co/api/test/"
+
+    def _tenant_base_override_enabled(self) -> bool:
+        return bool(os.getenv("CHASK_TENANT_API_BASE_URL"))
+
+    def _tenant_request_path(self, path: str) -> str:
+        if self._tenant_base_override_enabled():
+            path = str(path or "").strip()
+            if path.startswith("/api/test/"):
+                path = f"/api/{path[len('/api/test/') :]}"
+            return path.lstrip("/")
+        return self._normalize_tenant_path(path)
 
     def _normalize_branch(self, branch: Any) -> str:
         branch = str(branch or "").strip()
