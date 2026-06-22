@@ -1,7 +1,6 @@
 {
   "function_name": "McpTenantFn",
   "test_type": "operator_params",
-  "event_type": "preflight_discover",
   "args": {
     "preflight_mode": "discover",
     "slug": "chask-dev",
@@ -27,7 +26,9 @@
               "description": "Returns products matching a query.",
               "request_schema": {
                 "type": "object",
-                "required": ["q"],
+                "required": [
+                  "q"
+                ],
                 "properties": {
                   "q": {
                     "type": "string",

@@ -1,7 +1,6 @@
 {
   "function_name": "McpTenantFn",
   "test_type": "provided_params",
-  "event_type": "preflight_discover",
   "args": {
     "preflight_mode": "execute",
     "slug": "chask-dev",

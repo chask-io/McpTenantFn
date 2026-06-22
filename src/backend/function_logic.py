@@ -98,7 +98,7 @@ class FunctionBackend:
         fixtures and direct debugging.
         """
         params = self._extract_tool_args()
-        action = params.get("action") or params.get("preflight_mode")
+        action = params.get("preflight_mode") or params.get("action")
         if action not in {"discover", "execute"}:
             raise ValueError(
                 "McpTenantFn expects event_type=preflight_discover with "
