@@ -19,22 +19,6 @@ logger.setLevel(logging.INFO)
 DEFAULT_TOP_K = 10
 VALID_BRANCHES = {"prod", "test"}
 CONTROL_PLANE_TIMEOUT = 30
-CANARY_QUERY_PARAMETERS = {
-    ("/api/mcp-demo/orders/get", "get"): {
-        "order_id": {
-            "type": "string",
-            "required": True,
-            "description": "Order ID to look up.",
-        }
-    },
-    ("/api/mcp-demo/products/search", "search"): {
-        "q": {
-            "type": "string",
-            "required": True,
-            "description": "Free-text product search query.",
-        }
-    },
-}
 
 
 class FunctionBackend:
@@ -318,10 +302,21 @@ class FunctionBackend:
         if openapi_parameters:
             return openapi_parameters
 
-        return CANARY_QUERY_PARAMETERS.get(
-            (str(action.get("path") or ""), action_name),
-            {},
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "tenant_mcp_action_parameters_missing",
+                    "function_uuid": os.environ.get("FUNCTION_UUID"),
+                    "path": action.get("path"),
+                    "method": action.get("method"),
+                    "action": action_name,
+                    "request_schema": action.get("request_schema"),
+                    "has_parameters_field": bool(action.get("parameters")),
+                    "has_query_parameters_field": bool(action.get("query_parameters")),
+                }
+            )
         )
+        return {}
 
     def _schema_to_parameters(self, schema: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
         if not isinstance(schema, Mapping):
