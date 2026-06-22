@@ -2,21 +2,9 @@
   "function_name": "McpTenantFn",
   "test_type": "provided_params",
   "args": {
-    "preflight_mode": "execute",
-    "slug": "chask-dev",
-    "branch": "test",
-    "function_name": "get-order",
-    "action": "get",
-    "params": {
-      "order_id": "ord_1001"
-    },
-    "mock_execute_response": {
-      "order_id": "ord_1001",
-      "status": "paid",
-      "total": 12990
-    }
+    "action": "health"
   },
   "widget_params": {},
-  "prompt": "Execute the get-order tenant MCP function for order ord_1001.",
+  "prompt": "Run the McpTenantFn health check through a second provided-params fixture.",
   "files": []
 }

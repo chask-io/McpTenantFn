@@ -94,15 +94,27 @@ class FunctionBackend:
         """
         McpTenantFn is normally called through preflight_discover.
 
-        A normal function_call still supports action=discover/execute for test
-        fixtures and direct debugging.
+        A normal function_call supports action=health for publish gate
+        cold-start integrity checks. Real gateway behavior is preflight-only.
         """
         params = self._extract_tool_args()
         action = params.get("preflight_mode") or params.get("action")
+        if action == "health":
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "function": "McpTenantFn",
+                    "dynamic_tools": True,
+                    "function_uuid": os.environ.get("FUNCTION_UUID"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
         if action not in {"discover", "execute"}:
             raise ValueError(
                 "McpTenantFn expects event_type=preflight_discover with "
-                "preflight_mode=discover|execute."
+                "preflight_mode=discover|execute, or action=health for gate checks."
             )
 
         params["preflight_mode"] = action
@@ -110,7 +122,7 @@ class FunctionBackend:
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     def _discover(self, params: Mapping[str, Any]) -> list[Dict[str, Any]]:
-        response_data = self._mock_or_call_search(params)
+        response_data = self._call_search(params)
         functions = self._extract_functions(response_data, preferred_key="results")
         tool_defs = [self._function_to_tool_def(function) for function in functions]
         for tool_def in tool_defs:
@@ -119,9 +131,6 @@ class FunctionBackend:
         return tool_defs
 
     def _execute(self, params: Mapping[str, Any]) -> Any:
-        if params.get("mock_execute_response") is not None:
-            return params["mock_execute_response"]
-
         slug = self._required(params, "slug", "organization_slug")
         branch = self._normalize_branch(
             params.get("branch") or params.get("tenant_branch") or self.orchestration_event.branch
@@ -153,12 +162,7 @@ class FunctionBackend:
 
         raise ValueError(f"Unsupported tenant MCP action method: {method}")
 
-    def _mock_or_call_search(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
-        if params.get("mock_search_response") is not None:
-            return params["mock_search_response"]
-        if params.get("mock_functions") is not None:
-            return {"results": params["mock_functions"]}
-
+    def _call_search(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
         slug = self._required(params, "slug", "organization_slug")
         branch = self._normalize_branch(
             params.get("branch") or params.get("tenant_branch") or self.orchestration_event.branch

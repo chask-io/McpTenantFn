@@ -2,47 +2,9 @@
   "function_name": "McpTenantFn",
   "test_type": "operator_params",
   "args": {
-    "preflight_mode": "discover",
-    "slug": "chask-dev",
-    "branch": "test",
-    "conversation_state": "The latest user message asks to search products.",
-    "mock_search_response": {
-      "slug": "chask-dev",
-      "organization_uuid": "faed8f52-3a25-41be-8a13-cc10b51e05a7",
-      "branch": "test",
-      "results": [
-        {
-          "uuid": "00000000-0000-0000-0000-000000000002",
-          "name": "search-products",
-          "description": "Search tenant products.",
-          "branch": "test",
-          "score": 0.93,
-          "actions": [
-            {
-              "name": "search",
-              "method": "POST",
-              "path": "/api/mcp-demo/products/search",
-              "summary": "Search products",
-              "description": "Returns products matching a query.",
-              "request_schema": {
-                "type": "object",
-                "required": [
-                  "q"
-                ],
-                "properties": {
-                  "q": {
-                    "type": "string",
-                    "description": "Product search query."
-                  }
-                }
-              }
-            }
-          ]
-        }
-      ]
-    }
+    "action": "health"
   },
   "widget_params": {},
-  "prompt": "Discover tenant MCP tools for chask-dev test branch. The user wants to search products.",
+  "prompt": "Run the McpTenantFn health action.",
   "files": []
 }
