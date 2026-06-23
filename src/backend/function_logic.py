@@ -44,6 +44,7 @@ class FunctionBackend:
         action = merged_params.get("action") or merged_params.get("preflight_action")
         slug = merged_params.get("slug") or merged_params.get("organization_slug")
         branch = merged_params.get("branch") or merged_params.get("tenant_branch")
+        tenant_organization_id = self._tenant_mcp_organization_id(merged_params)
         function_name = (
             merged_params.get("function_name")
             or merged_params.get("target_function_name")
@@ -60,6 +61,7 @@ class FunctionBackend:
                 "branch": branch,
                 "action": action,
                 "function_name": function_name,
+                "tenant_organization_id": tenant_organization_id,
             }
 
         try:
@@ -145,7 +147,15 @@ class FunctionBackend:
         if not isinstance(call_params, dict):
             raise ValueError("execute params must be an object")
 
-        action_def = self._resolve_action(params, slug, branch, function_name, action)
+        tenant_organization_id = self._tenant_mcp_organization_id(params)
+        action_def = self._resolve_action(
+            params,
+            slug,
+            branch,
+            function_name,
+            action,
+            tenant_organization_id=tenant_organization_id,
+        )
         path = self._required(action_def, "path")
         method = str(action_def.get("method") or "GET").upper()
 
@@ -156,6 +166,7 @@ class FunctionBackend:
             action=action,
             path=path,
             method=method,
+            tenant_organization_id=tenant_organization_id,
         )
         route = exchange.get("route") if isinstance(exchange.get("route"), Mapping) else {}
         tenant_path = self._tenant_request_path(self._required(route, "path"))
@@ -169,6 +180,7 @@ class FunctionBackend:
                 branch,
                 tenant_path,
                 access_token,
+                tenant_organization_id=tenant_organization_id,
                 params=call_params,
             )
         if tenant_method == "POST":
@@ -178,6 +190,7 @@ class FunctionBackend:
                 branch,
                 tenant_path,
                 access_token,
+                tenant_organization_id=tenant_organization_id,
                 json=call_params,
             )
 
@@ -199,12 +212,24 @@ class FunctionBackend:
             "conversation_state": conversation_state,
             "top_k": top_k,
         }
-        return self._control_plane_request("POST", "tenant-mcp/search", json=payload)
+        return self._control_plane_request(
+            "POST",
+            "tenant-mcp/search",
+            organization_id=self._tenant_mcp_organization_id(params),
+            json=payload,
+        )
 
-    def _fetch_inventory(self, slug: str, branch: str) -> Mapping[str, Any]:
+    def _fetch_inventory(
+        self,
+        slug: str,
+        branch: str,
+        *,
+        tenant_organization_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
         return self._control_plane_request(
             "GET",
             "tenant-mcp/functions",
+            organization_id=tenant_organization_id,
             params={"slug": slug, "branch": branch},
         )
 
@@ -217,10 +242,12 @@ class FunctionBackend:
         action: str,
         path: str,
         method: str,
+        tenant_organization_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
         started_at = time.monotonic()
         payload = {
-            "org_uuid": self.orchestration_event.organization.organization_id,
+            "org_uuid": tenant_organization_id
+            or self.orchestration_event.organization.organization_id,
             "branch": branch,
             "slug": slug,
             "function_name": function_name,
@@ -232,6 +259,7 @@ class FunctionBackend:
             response_data = self._control_plane_request(
                 "POST",
                 "tenant-mcp/exchange-execute-token",
+                organization_id=tenant_organization_id,
                 json=payload,
             )
             logger.info(
@@ -275,11 +303,19 @@ class FunctionBackend:
             )
             raise
 
-    def _control_plane_request(self, method: str, path: str, **request_kwargs) -> Mapping[str, Any]:
+    def _control_plane_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        organization_id: Optional[str] = None,
+        **request_kwargs,
+    ) -> Mapping[str, Any]:
         url = f"{self._control_plane_base_url()}/{path.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {self.orchestration_event.access_token}",
-            "Organization-ID": self.orchestration_event.organization.organization_id,
+            "Organization-ID": organization_id
+            or self.orchestration_event.organization.organization_id,
             "Content-Type": "application/json",
         }
         response = self.session.request(
@@ -307,12 +343,14 @@ class FunctionBackend:
         branch: str,
         path: str,
         access_token: str,
+        tenant_organization_id: Optional[str] = None,
         **request_kwargs,
     ) -> Any:
         url = self._tenant_url(slug, branch, path)
         headers = {
             "Authorization": f"Bearer {access_token}",
-            "Organization-ID": self.orchestration_event.organization.organization_id,
+            "Organization-ID": tenant_organization_id
+            or self.orchestration_event.organization.organization_id,
             "Content-Type": "application/json",
         }
         if self._tenant_base_override_enabled():
@@ -376,6 +414,16 @@ class FunctionBackend:
             )
             raise
 
+    def _tenant_mcp_organization_id(self, params: Optional[Mapping[str, Any]] = None) -> str:
+        params = params or {}
+        value = (
+            params.get("tenant_organization_id")
+            or params.get("control_plane_organization_id")
+            or params.get("dynamic_tool_organization_id")
+            or params.get("mcp_organization_id")
+        )
+        return str(value or self.orchestration_event.organization.organization_id)
+
     def _request_with_retries(self, method: str, url: str, **request_kwargs) -> requests.Response:
         last_error: Optional[requests.RequestException] = None
         for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
@@ -410,6 +458,8 @@ class FunctionBackend:
         branch: str,
         function_name: str,
         action: str,
+        *,
+        tenant_organization_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
         direct_action = params.get("action_metadata") or params.get("action_def")
         if isinstance(direct_action, Mapping) and direct_action.get("path"):
@@ -422,7 +472,11 @@ class FunctionBackend:
             if action_def:
                 return action_def
 
-        inventory = self._fetch_inventory(slug, branch)
+        inventory = self._fetch_inventory(
+            slug,
+            branch,
+            tenant_organization_id=tenant_organization_id,
+        )
         for function in self._extract_functions(inventory, preferred_key="functions"):
             if self._function_name(function) != function_name:
                 continue
