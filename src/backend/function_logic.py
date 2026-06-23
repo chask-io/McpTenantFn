@@ -312,10 +312,14 @@ class FunctionBackend:
         **request_kwargs,
     ) -> Mapping[str, Any]:
         url = f"{self._control_plane_base_url()}/{path.lstrip('/')}"
+        resolved_organization_id = (
+            organization_id or self.orchestration_event.organization.organization_id
+        )
         headers = {
-            "Authorization": f"Bearer {self.orchestration_event.access_token}",
-            "Organization-ID": organization_id
-            or self.orchestration_event.organization.organization_id,
+            "Authorization": (
+                f"Bearer {self._control_plane_access_token(resolved_organization_id)}"
+            ),
+            "Organization-ID": resolved_organization_id,
             "Content-Type": "application/json",
         }
         response = self.session.request(
@@ -423,6 +427,18 @@ class FunctionBackend:
             or params.get("mcp_organization_id")
         )
         return str(value or self.orchestration_event.organization.organization_id)
+
+    def _control_plane_access_token(self, organization_id: Optional[str] = None) -> str:
+        event_organization_id = self.orchestration_event.organization.organization_id
+        is_cross_org = bool(organization_id and str(organization_id) != str(event_organization_id))
+        override_token = (
+            os.getenv("CHASK_TENANT_MCP_CONTROL_PLANE_TOKEN")
+            or os.getenv("CHASK_TENANT_MCP_CONTROL_PLANE_API_KEY")
+            or os.getenv("CHASK_TENANT_MCP_CONTROL_PLANE_ACCESS_TOKEN")
+        )
+        if is_cross_org and override_token:
+            return override_token
+        return self.orchestration_event.access_token
 
     def _request_with_retries(self, method: str, url: str, **request_kwargs) -> requests.Response:
         last_error: Optional[requests.RequestException] = None
