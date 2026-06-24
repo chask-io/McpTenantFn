@@ -12,6 +12,7 @@ function:
     - foundationMinimal
     - foundationApi
 
+  data: {}
 
   parameters:
     required: []
