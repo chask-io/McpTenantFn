@@ -12,10 +12,6 @@ function:
     - foundationMinimal
     - foundationApi
 
-  data:
-    rpc:
-      - GET /api/*
-      - POST /api/*
 
   parameters:
     required: []
