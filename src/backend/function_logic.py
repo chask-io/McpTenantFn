@@ -10,14 +10,8 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from chask_foundation.backend.models import OrchestrationEvent
 
-try:
-    from api.tenant_data_requests import from_event as tenant_data_client_from_event
-    from api.tenant_mcp_requests import tenant_mcp_api_manager
-except ImportError:
-    from chask_foundation.api.tenant_data_requests import (
-        from_event as tenant_data_client_from_event,
-    )
-    from chask_foundation.api.tenant_mcp_requests import tenant_mcp_api_manager
+from api.tenant_data_requests import from_event as tenant_data_client_from_event
+from api.tenant_mcp_requests import tenant_mcp_api_manager
 
 
 logger = logging.getLogger()
