@@ -7,9 +7,9 @@ import logging
 import os
 import time
 from typing import Any, Dict, Iterable, Mapping, Optional
+from urllib.parse import urljoin
 
 import requests
-from chask_foundation.api.tenant_data_requests import TenantDataClient
 from chask_foundation.backend.models import OrchestrationEvent
 
 
@@ -19,6 +19,8 @@ logger.setLevel(logging.INFO)
 DEFAULT_TOP_K = 10
 VALID_BRANCHES = {"prod", "test"}
 CONTROL_PLANE_TIMEOUT = 30
+TENANT_API_TIMEOUT = 30
+RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 
 
 class FunctionBackend:
@@ -42,6 +44,7 @@ class FunctionBackend:
         action = merged_params.get("action") or merged_params.get("preflight_action")
         slug = merged_params.get("slug") or merged_params.get("organization_slug")
         branch = merged_params.get("branch") or merged_params.get("tenant_branch")
+        tenant_organization_id = self._tenant_mcp_organization_id(merged_params)
         function_name = (
             merged_params.get("function_name")
             or merged_params.get("target_function_name")
@@ -58,6 +61,7 @@ class FunctionBackend:
                 "branch": branch,
                 "action": action,
                 "function_name": function_name,
+                "tenant_organization_id": tenant_organization_id,
             }
 
         try:
@@ -143,22 +147,54 @@ class FunctionBackend:
         if not isinstance(call_params, dict):
             raise ValueError("execute params must be an object")
 
-        action_def = self._resolve_action(params, slug, branch, function_name, action)
+        tenant_organization_id = self._tenant_mcp_organization_id(params)
+        action_def = self._resolve_action(
+            params,
+            slug,
+            branch,
+            function_name,
+            action,
+            tenant_organization_id=tenant_organization_id,
+        )
         path = self._required(action_def, "path")
         method = str(action_def.get("method") or "GET").upper()
 
-        client = TenantDataClient.from_event(
-            self.orchestration_event,
-            lambda_uuid=os.environ["FUNCTION_UUID"],
+        exchange = self._exchange_execute_token(
+            slug=slug,
+            branch=branch,
+            function_name=function_name,
+            action=action,
+            path=path,
+            method=method,
+            tenant_organization_id=tenant_organization_id,
         )
-        tenant_path = self._normalize_tenant_path(path)
+        route = exchange.get("route") if isinstance(exchange.get("route"), Mapping) else {}
+        tenant_path = self._tenant_request_path(self._required(route, "path"))
+        tenant_method = str(route.get("method") or method).upper()
+        access_token = self._required(exchange, "access_token")
 
-        if method == "GET":
-            return client.get(tenant_path, params=call_params)
-        if method == "POST":
-            return client.post(tenant_path, json=call_params)
+        if tenant_method == "GET":
+            return self._tenant_api_request(
+                tenant_method,
+                slug,
+                branch,
+                tenant_path,
+                access_token,
+                tenant_organization_id=tenant_organization_id,
+                params=call_params,
+            )
+        if tenant_method == "POST":
+            return self._tenant_api_request(
+                tenant_method,
+                slug,
+                branch,
+                tenant_path,
+                access_token,
+                tenant_organization_id=tenant_organization_id,
+                json=call_params,
+            )
 
-        raise ValueError(f"Unsupported tenant MCP action method: {method}")
+        raise ValueError(f"Unsupported tenant MCP action method: {tenant_method}")
 
     def _call_search(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
         slug = self._required(params, "slug", "organization_slug")
@@ -176,20 +212,110 @@ class FunctionBackend:
             "conversation_state": conversation_state,
             "top_k": top_k,
         }
-        return self._control_plane_request("POST", "tenant-mcp/search", json=payload)
+        return self._control_plane_request(
+            "POST",
+            "tenant-mcp/search",
+            organization_id=self._tenant_mcp_organization_id(params),
+            json=payload,
+        )
 
-    def _fetch_inventory(self, slug: str, branch: str) -> Mapping[str, Any]:
+    def _fetch_inventory(
+        self,
+        slug: str,
+        branch: str,
+        *,
+        tenant_organization_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
         return self._control_plane_request(
             "GET",
             "tenant-mcp/functions",
+            organization_id=tenant_organization_id,
             params={"slug": slug, "branch": branch},
         )
 
-    def _control_plane_request(self, method: str, path: str, **request_kwargs) -> Mapping[str, Any]:
+    def _exchange_execute_token(
+        self,
+        *,
+        slug: str,
+        branch: str,
+        function_name: str,
+        action: str,
+        path: str,
+        method: str,
+        tenant_organization_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        started_at = time.monotonic()
+        payload = {
+            "org_uuid": tenant_organization_id
+            or self.orchestration_event.organization.organization_id,
+            "branch": branch,
+            "slug": slug,
+            "function_name": function_name,
+            "action": action,
+            "path": path,
+            "method": method,
+        }
+        try:
+            response_data = self._control_plane_request(
+                "POST",
+                "tenant-mcp/exchange-execute-token",
+                organization_id=tenant_organization_id,
+                json=payload,
+            )
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "tenant_mcp_exchange_execute_token",
+                        "function_uuid": os.environ.get("FUNCTION_UUID"),
+                        "slug": slug,
+                        "branch": branch,
+                        "function_name": function_name,
+                        "action": action,
+                        "exchange_duration_ms": int(
+                            (time.monotonic() - started_at) * 1000
+                        ),
+                        "exchange_error": None,
+                        "route": response_data.get("route"),
+                        "access_token": "<redacted>"
+                        if response_data.get("access_token")
+                        else None,
+                    }
+                )
+            )
+            return response_data
+        except Exception as exc:
+            logger.error(
+                json.dumps(
+                    {
+                        "event": "tenant_mcp_exchange_execute_token",
+                        "function_uuid": os.environ.get("FUNCTION_UUID"),
+                        "slug": slug,
+                        "branch": branch,
+                        "function_name": function_name,
+                        "action": action,
+                        "exchange_duration_ms": int(
+                            (time.monotonic() - started_at) * 1000
+                        ),
+                        "exchange_error": str(exc),
+                    }
+                ),
+                exc_info=True,
+            )
+            raise
+
+    def _control_plane_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        organization_id: Optional[str] = None,
+        **request_kwargs,
+    ) -> Mapping[str, Any]:
         url = f"{self._control_plane_base_url()}/{path.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {self.orchestration_event.access_token}",
-            "Organization-ID": self.orchestration_event.organization.organization_id,
+            "Organization-ID": organization_id
+            or self.orchestration_event.organization.organization_id,
             "Content-Type": "application/json",
         }
         response = self.session.request(
@@ -210,6 +336,121 @@ class FunctionBackend:
             )
         return data
 
+    def _tenant_api_request(
+        self,
+        method: str,
+        slug: str,
+        branch: str,
+        path: str,
+        access_token: str,
+        tenant_organization_id: Optional[str] = None,
+        **request_kwargs,
+    ) -> Any:
+        url = self._tenant_url(slug, branch, path)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Organization-ID": tenant_organization_id
+            or self.orchestration_event.organization.organization_id,
+            "Content-Type": "application/json",
+        }
+        if self._tenant_base_override_enabled():
+            # DEV/emergency override for tenants not wired to the edge; prod uses
+            # the public tenant host where Cloudflare injects these headers.
+            headers["X-Chask-Tenant"] = slug
+            headers["X-Chask-Branch"] = branch
+        started_at = time.monotonic()
+        try:
+            response = self._request_with_retries(
+                method,
+                url,
+                headers=headers,
+                timeout=TENANT_API_TIMEOUT,
+                **request_kwargs,
+            )
+            data = self._response_json(response)
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "tenant_mcp_execute_tenant_request",
+                        "function_uuid": os.environ.get("FUNCTION_UUID"),
+                        "slug": slug,
+                        "branch": branch,
+                        "method": method,
+                        "path": path,
+                        "status_code": response.status_code,
+                        "tenant_request_duration_ms": int(
+                            (time.monotonic() - started_at) * 1000
+                        ),
+                        "tenant_request_error": None
+                        if 200 <= response.status_code < 300
+                        else data,
+                    }
+                )
+            )
+            if not 200 <= response.status_code < 300:
+                detail = data.get("detail") if isinstance(data, Mapping) else data
+                raise requests.HTTPError(
+                    f"HTTP {response.status_code} from {response.url}: {detail}",
+                    response=response,
+                )
+            return data
+        except Exception as exc:
+            logger.error(
+                json.dumps(
+                    {
+                        "event": "tenant_mcp_execute_tenant_request",
+                        "function_uuid": os.environ.get("FUNCTION_UUID"),
+                        "slug": slug,
+                        "branch": branch,
+                        "method": method,
+                        "path": path,
+                        "tenant_request_duration_ms": int(
+                            (time.monotonic() - started_at) * 1000
+                        ),
+                        "tenant_request_error": str(exc),
+                    }
+                ),
+                exc_info=True,
+            )
+            raise
+
+    def _tenant_mcp_organization_id(self, params: Optional[Mapping[str, Any]] = None) -> str:
+        params = params or {}
+        value = (
+            params.get("tenant_organization_id")
+            or params.get("control_plane_organization_id")
+            or params.get("dynamic_tool_organization_id")
+            or params.get("mcp_organization_id")
+        )
+        return str(value or self.orchestration_event.organization.organization_id)
+
+    def _request_with_retries(self, method: str, url: str, **request_kwargs) -> requests.Response:
+        last_error: Optional[requests.RequestException] = None
+        for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
+            try:
+                response = self.session.request(method, url, **request_kwargs)
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < len(RETRY_BACKOFF_SECONDS):
+                    time.sleep(RETRY_BACKOFF_SECONDS[attempt])
+                    continue
+                raise
+
+            if response.status_code >= 500 and attempt < len(RETRY_BACKOFF_SECONDS):
+                time.sleep(RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            return response
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Tenant API request exhausted retries without a response")
+
+    def _response_json(self, response: requests.Response) -> Any:
+        try:
+            return response.json()
+        except ValueError:
+            return {"detail": response.text}
+
     def _resolve_action(
         self,
         params: Mapping[str, Any],
@@ -217,6 +458,8 @@ class FunctionBackend:
         branch: str,
         function_name: str,
         action: str,
+        *,
+        tenant_organization_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
         direct_action = params.get("action_metadata") or params.get("action_def")
         if isinstance(direct_action, Mapping) and direct_action.get("path"):
@@ -229,7 +472,11 @@ class FunctionBackend:
             if action_def:
                 return action_def
 
-        inventory = self._fetch_inventory(slug, branch)
+        inventory = self._fetch_inventory(
+            slug,
+            branch,
+            tenant_organization_id=tenant_organization_id,
+        )
         for function in self._extract_functions(inventory, preferred_key="functions"):
             if self._function_name(function) != function_name:
                 continue
@@ -402,6 +649,28 @@ class FunctionBackend:
         if mode == "PRODUCTION":
             return "https://app.chask.io/api/v2"
         return "https://app.chask.it/api/v2"
+
+    def _tenant_url(self, slug: str, branch: str, path: str) -> str:
+        return urljoin(self._tenant_base_url(slug, branch), path.lstrip("/"))
+
+    def _tenant_base_url(self, slug: str, branch: str) -> str:
+        override_url = os.getenv("CHASK_TENANT_API_BASE_URL")
+        if override_url:
+            return f"{override_url.rstrip('/')}/"
+        if branch == "prod":
+            return f"https://{slug}.chask.co/api/"
+        return f"https://{slug}.chask.co/api/test/"
+
+    def _tenant_base_override_enabled(self) -> bool:
+        return bool(os.getenv("CHASK_TENANT_API_BASE_URL"))
+
+    def _tenant_request_path(self, path: str) -> str:
+        if self._tenant_base_override_enabled():
+            path = str(path or "").strip()
+            if path.startswith("/api/test/"):
+                path = f"/api/{path[len('/api/test/') :]}"
+            return path.lstrip("/")
+        return self._normalize_tenant_path(path)
 
     def _normalize_branch(self, branch: Any) -> str:
         branch = str(branch or "").strip()
