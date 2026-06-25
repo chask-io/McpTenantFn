@@ -10,7 +10,6 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from chask_foundation.backend.models import OrchestrationEvent
 
-from api.tenant_data_requests import from_event as tenant_data_client_from_event
 from api.tenant_mcp_requests import tenant_mcp_api_manager
 
 
@@ -146,43 +145,37 @@ class FunctionBackend:
             raise ValueError("execute params must be an object")
 
         tenant_organization_id = self._tenant_mcp_organization_id(params)
-        action_def = self._resolve_action(
-            params,
-            slug,
-            branch,
-            function_name,
-            action,
-            tenant_organization_id=tenant_organization_id,
-        )
-        path = self._required(action_def, "path")
-        method = str(action_def.get("method") or "GET").upper()
-        tenant_path = self._tenant_data_client_path(path)
-        tenant_client = self._tenant_data_client(branch, tenant_organization_id)
+        event_org_id = str(self.orchestration_event.organization.organization_id)
+        if str(tenant_organization_id) != event_org_id:
+            raise ValueError(
+                "Tenant MCP execute must use the orchestration event organization; "
+                "cross-org execute is not allowed."
+            )
 
         started_at = time.monotonic()
         try:
-            if method == "GET":
-                result = tenant_client.get(tenant_path, params=call_params)
-            elif method == "POST":
-                result = tenant_client.post(tenant_path, json=call_params)
-            else:
-                raise ValueError(f"Unsupported tenant MCP action method: {method}")
-
+            result = tenant_mcp_api_manager.call(
+                "execute_tenant_mcp_function",
+                slug=slug,
+                branch=branch,
+                function_name=function_name,
+                action=action,
+                params=call_params,
+                access_token=self.orchestration_event.access_token,
+                organization_id=tenant_organization_id,
+                timeout=CONTROL_PLANE_TIMEOUT,
+            )
             logger.info(
                 json.dumps(
                     {
-                        "event": "tenant_mcp_execute_tenant_data_client",
+                        "event": "tenant_mcp_execute_control_plane",
                         "function_uuid": os.environ.get("FUNCTION_UUID"),
                         "slug": slug,
                         "branch": branch,
                         "function_name": function_name,
                         "action": action,
-                        "method": method,
-                        "path": tenant_path,
-                        "tenant_request_duration_ms": int(
-                            (time.monotonic() - started_at) * 1000
-                        ),
-                        "tenant_request_error": None,
+                        "duration_ms": int((time.monotonic() - started_at) * 1000),
+                        "error": None,
                     }
                 )
             )
@@ -191,18 +184,14 @@ class FunctionBackend:
             logger.error(
                 json.dumps(
                     {
-                        "event": "tenant_mcp_execute_tenant_data_client",
+                        "event": "tenant_mcp_execute_control_plane",
                         "function_uuid": os.environ.get("FUNCTION_UUID"),
                         "slug": slug,
                         "branch": branch,
                         "function_name": function_name,
                         "action": action,
-                        "method": method,
-                        "path": tenant_path,
-                        "tenant_request_duration_ms": int(
-                            (time.monotonic() - started_at) * 1000
-                        ),
-                        "tenant_request_error": str(exc),
+                        "duration_ms": int((time.monotonic() - started_at) * 1000),
+                        "error": str(exc),
                     }
                 ),
                 exc_info=True,
@@ -230,23 +219,6 @@ class FunctionBackend:
             timeout=CONTROL_PLANE_TIMEOUT,
         )
 
-    def _fetch_inventory(
-        self,
-        slug: str,
-        branch: str,
-        *,
-        tenant_organization_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
-        return tenant_mcp_api_manager.call(
-            "list_tenant_mcp_functions",
-            slug=slug,
-            branch=branch,
-            access_token=self.orchestration_event.access_token,
-            organization_id=tenant_organization_id
-            or self.orchestration_event.organization.organization_id,
-            timeout=CONTROL_PLANE_TIMEOUT,
-        )
-
     def _tenant_mcp_organization_id(self, params: Optional[Mapping[str, Any]] = None) -> str:
         params = params or {}
         value = (
@@ -256,51 +228,6 @@ class FunctionBackend:
             or params.get("mcp_organization_id")
         )
         return str(value or self.orchestration_event.organization.organization_id)
-
-    def _resolve_action(
-        self,
-        params: Mapping[str, Any],
-        slug: str,
-        branch: str,
-        function_name: str,
-        action: str,
-        *,
-        tenant_organization_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
-        direct_action = params.get("action_metadata") or params.get("action_def")
-        if isinstance(direct_action, Mapping) and direct_action.get("path"):
-            return direct_action
-
-        for function in self._candidate_functions(params):
-            if self._function_name(function) != function_name:
-                continue
-            action_def = self._find_action(function, action)
-            if action_def:
-                return action_def
-
-        inventory = self._fetch_inventory(
-            slug,
-            branch,
-            tenant_organization_id=tenant_organization_id,
-        )
-        for function in self._extract_functions(inventory, preferred_key="functions"):
-            if self._function_name(function) != function_name:
-                continue
-            action_def = self._find_action(function, action)
-            if action_def:
-                return action_def
-
-        raise ValueError(f"Unknown tenant MCP action: {function_name}.{action}")
-
-    def _candidate_functions(self, params: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
-        values = [
-            params.get("function_data"),
-            params.get("discovered_function"),
-            params.get("tenant_mcp_function"),
-        ]
-        values.extend(self._extract_functions(params, preferred_key="functions"))
-        values.extend(self._extract_functions(params, preferred_key="results"))
-        return [value for value in values if isinstance(value, Mapping)]
 
     def _function_to_tool_def(self, function: Mapping[str, Any]) -> Dict[str, Any]:
         name = self._function_name(function)
@@ -408,21 +335,6 @@ class FunctionBackend:
             }
         return result
 
-    def _find_action(self, function: Mapping[str, Any], action_name: str) -> Optional[Mapping[str, Any]]:
-        actions = function.get("actions") or []
-        for action in actions:
-            if isinstance(action, Mapping) and (
-                action.get("name") == action_name or action.get("action") == action_name
-            ):
-                return action
-
-        mcp_actions = function.get("mcp_actions")
-        if isinstance(mcp_actions, Mapping):
-            action = mcp_actions.get(action_name)
-            if isinstance(action, Mapping):
-                return action
-        return None
-
     def _extract_functions(
         self,
         data: Mapping[str, Any],
@@ -444,46 +356,11 @@ class FunctionBackend:
         tool_call = tool_calls[0] or {}
         return tool_call.get("args", {}) or {}
 
-    def _tenant_data_client(self, branch: str, tenant_organization_id: Optional[str] = None):
-        event_org_id = str(self.orchestration_event.organization.organization_id)
-        tenant_org_id = str(tenant_organization_id or event_org_id)
-        if tenant_org_id != event_org_id:
-            raise ValueError(
-                "Tenant MCP execute must use the orchestration event organization; "
-                "cross-org execute is not allowed."
-            )
-
-        lambda_uuid = os.environ.get("FUNCTION_UUID")
-        if not lambda_uuid:
-            raise RuntimeError("FUNCTION_UUID is required for tenant MCP execute")
-
-        event = self.orchestration_event
-        if event.branch != branch:
-            event = event.model_copy(deep=True)
-            event.branch = branch
-        return tenant_data_client_from_event(event, lambda_uuid=lambda_uuid)
-
-    def _tenant_data_client_path(self, path: str) -> str:
-        if os.getenv("CHASK_TENANT_API_BASE_URL"):
-            path = str(path or "").strip()
-            if path.startswith("/api/test/"):
-                path = f"/api/{path[len('/api/test/') :]}"
-            return path.lstrip("/")
-        return self._normalize_tenant_path(path)
-
     def _normalize_branch(self, branch: Any) -> str:
         branch = str(branch or "").strip()
         if branch not in VALID_BRANCHES:
             raise ValueError("branch must be prod or test")
         return branch
-
-    def _normalize_tenant_path(self, path: str) -> str:
-        path = str(path or "").strip()
-        if path.startswith("/api/test/"):
-            return path[len("/api/test/") :]
-        if path.startswith("/api/"):
-            return path[len("/api/") :]
-        return path.lstrip("/")
 
     def _function_name(self, function: Mapping[str, Any]) -> str:
         return str(
